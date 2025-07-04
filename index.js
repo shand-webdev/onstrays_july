@@ -12,12 +12,7 @@ const server = createServer(app);
 
 // CORS configuration
 const corsOptions = {
-  origin: [
-    'http://localhost:3000',
-    'https://onstrays-july-client.vercel.app',
-    // For MVP, you can also allow all origins:
-    // '*'
-  ],
+  origin: "*",
   credentials: true
 };
 
