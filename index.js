@@ -156,6 +156,8 @@ function disconnectFromMatch(socketId) {
     // Notify partner of disconnection
     if (partnerSocket && partnerSocket.connected) {
       partnerSocket.emit('partner_disconnected');
+
+      addToQueue(match.partnerId);
       logEvent('PARTNER_DISCONNECT', `User ${match.partnerId} notified of partner ${socketId} disconnect`);
     }
     
