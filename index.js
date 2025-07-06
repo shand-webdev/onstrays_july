@@ -2,6 +2,7 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 // =============================================================================
 // SERVER SETUP
@@ -308,6 +309,44 @@ io.on('connection', (socket) => {
 // =============================================================================
 // EXPRESS ROUTES
 // =============================================================================
+
+// Cloudflare TURN credentials endpoint
+app.get('/api/turn-credentials', async (req, res) => {
+  try {
+    const response = await fetch('https://rtc.live.cloudflare.com/v1/turn/keys/b279b7d70b7aa3e0ff1eb21e02245a5b/credentials/generate-ice-servers', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer c54c7c205b6a197d16f0243e7d6a9ef9ae5a0bf2e85a60a3b37f529f0800e8b5',//api
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ttl: 86400 }) // 24 hours
+    });
+    
+    const data = await response.json();
+    logEvent('CLOUDFLARE_CREDS', '✅ Cloudflare TURN credentials generated');
+    res.json(data);
+  } catch (error) {
+    logEvent('CLOUDFLARE_ERROR', `❌ Error getting Cloudflare credentials: ${error.message}`);
+    
+    // Fallback to backup TURN servers
+    res.json({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        {
+          urls: "turn:a.relay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+        {
+          urls: "turn:a.relay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        }
+      ]
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
