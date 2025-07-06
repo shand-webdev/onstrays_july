@@ -313,19 +313,34 @@ io.on('connection', (socket) => {
 // Cloudflare TURN credentials endpoint
 app.get('/api/turn-credentials', async (req, res) => {
   try {
+    console.log('🔄 Calling Cloudflare API...');
+    
     const response = await fetch('https://rtc.live.cloudflare.com/v1/turn/keys/b279b7d70b7aa3e0ff1eb21e02245a5b/credentials/generate-ice-servers', {
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer c54c7c205b6a197d16f0243e7d6a9ef9ae5a0bf2e85a60a3b37f529f0800e8b5',//api
+        'Authorization': 'Bearer c54c7c205b6a197d16f0243e7d6a9ef9ae5a0bf2e85a60a3b37f529f0800e8b5', // Fixed token
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ ttl: 86400 }) // 24 hours
+      body: JSON.stringify({ ttl: 86400 })
     });
     
+    console.log('📡 Cloudflare API Status:', response.status);
+    console.log('📡 Response Headers:', response.headers.raw());
+
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log('❌ Cloudflare API Error:', errorText);
+      throw new Error(`API Error: ${response.status} - ${errorText}`);
+    }
+    
     const data = await response.json();
+    console.log('✅ Cloudflare API Success:', JSON.stringify(data, null, 2));
+    
     logEvent('CLOUDFLARE_CREDS', '✅ Cloudflare TURN credentials generated');
     res.json(data);
   } catch (error) {
+    console.log('❌ Full Error:', error);
     logEvent('CLOUDFLARE_ERROR', `❌ Error getting Cloudflare credentials: ${error.message}`);
     
     // Fallback to backup TURN servers
