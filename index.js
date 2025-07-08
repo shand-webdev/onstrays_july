@@ -212,13 +212,20 @@ function relaySignalingMessage(socketId, messageType, data) {
   }
 }
 
+
 // =============================================================================
 // SOCKET.IO EVENT HANDLERS
 // =============================================================================
 
+
+console.log('🧪 ABOUT TO SET UP IO CONNECTION HANDLER');
+
 io.on('connection', (socket) => {
+   console.log('🧪 Setting up event handlers for socket:', socket.id); // Add this line
+
   logEvent('USER_CONNECT', `User ${socket.id} connected from ${socket.handshake.address}`);
-  
+   
+
   // Store socket connection
   connections.set(socket.id, socket);
   
@@ -285,6 +292,19 @@ io.on('connection', (socket) => {
     logEvent('ICE_CANDIDATE_RECEIVED', `ICE candidate received from ${socket.id}`);
     relaySignalingMessage(socket.id, 'ice-candidate', data);
   });
+
+ // Handle chat messages
+ socket.on('message', (data) => {
+  console.log('🔥 BACKEND: MESSAGE EVENT TRIGGERED!');
+  console.log('📦 BACKEND: Data received:', data);
+  logEvent('MESSAGE_RECEIVED', `Message from ${socket.id} to ${data.partnerId}`);
+  relaySignalingMessage(socket.id, 'message', data);
+});
+
+  socket.on('test-connection', (data) => {
+  console.log('🧪 BACKEND: Test connection received:', data);
+  socket.emit('test-response', { message: 'Hello from backend' });
+});
   
   // Handle manual disconnect from match (but staying connected to server)
   socket.on('disconnect_match', () => {
@@ -426,6 +446,7 @@ setInterval(() => {
 const PORT = process.env.PORT || 3001;
 
 server.listen(PORT, () => {
+  
   logEvent('SERVER_START', `OnStrays backend server running on port ${PORT}`);
   logEvent('SERVER_CONFIG', `Ping timeout: 60s, Ping interval: 25s`);
 });
