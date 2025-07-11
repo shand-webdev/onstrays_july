@@ -35,8 +35,21 @@ const io = new Server(server, {
 // GLOBAL STATE MANAGEMENT
 // =============================================================================
 
-// Queue for users waiting to be matched
-const waitingQueue = [];
+// Interest-based queues for users waiting to be matched
+const interestQueues = {
+  "Any Interest": [],
+  "Music": [],
+  "Tech": [],
+  "AI": [],
+  "Books": [],
+  "Fitness": [],
+  "Movies": [],
+  "Travel": [],
+  "Gaming": []
+};
+
+// Store user preferences: Map of socketId -> user data
+const userPreferences = new Map();
 
 // Active matches: Map of socketId -> { partnerId, role }
 const activeMatches = new Map();
@@ -71,76 +84,143 @@ function validateConnection(socketId) {
 /**
  * Removes a user from the waiting queue
  */
-function removeFromQueue(socketId) {
-  const index = waitingQueue.findIndex(id => id === socketId);
-  if (index !== -1) {
-    waitingQueue.splice(index, 1);
-    logEvent('QUEUE_REMOVE', `User ${socketId} removed from queue. Queue size: ${waitingQueue.length}`);
+function removeFromAllQueues(socketId) {
+  let removed = false;
+  for (const [interest, queue] of Object.entries(interestQueues)) {
+    const index = queue.findIndex(user => user.socketId === socketId);
+    if (index !== -1) {
+      queue.splice(index, 1);
+      logEvent('QUEUE_REMOVE', `User ${socketId} removed from ${interest} queue. Queue size: ${queue.length}`);
+      removed = true;
+    }
   }
+  userPreferences.delete(socketId);
+  return removed;
 }
 
-/**
- * Adds a user to the waiting queue if not already present
- */
-function addToQueue(socketId) {
-  if (!waitingQueue.includes(socketId)) {
-    waitingQueue.push(socketId);
-    logEvent('QUEUE_ADD', `User ${socketId} added to queue. Queue size: ${waitingQueue.length}`);
+function addToQueue(socketId, userData) {
+  // Store user preferences
+  userPreferences.set(socketId, userData);
+  
+  // Get user's selected interest (fallback to "Any Interest")
+let selectedInterest = userData.interest || "Any Interest";
+
+  // Ensure the interest queue exists
+  if (!interestQueues[selectedInterest]) {
+    logEvent('QUEUE_WARNING', `Interest "${selectedInterest}" not found, using "Any Interest"`);
+    selectedInterest = "Any Interest";
   }
+  
+  // Add user to the single appropriate queue
+  interestQueues[selectedInterest].push({
+    socketId: socketId,
+    ...userData
+  });
+  
+  logEvent('QUEUE_ADD', `User ${socketId} added to ${selectedInterest} queue. Queue size: ${interestQueues[selectedInterest].length}`);
 }
 
 /**
  * Attempts to match two users from the queue
  */
-function attemptMatching() {
-  if (waitingQueue.length >= 2) {
-    const user1Id = waitingQueue.shift();
-    const user2Id = waitingQueue.shift();
-    
-    const user1Socket = connections.get(user1Id);
-    const user2Socket = connections.get(user2Id);
-    
-    // Verify both sockets still exist and are connected
-    if (!user1Socket || !user2Socket || !user1Socket.connected || !user2Socket.connected) {
-      logEvent('MATCH_FAILED', `Invalid sockets for users ${user1Id} and ${user2Id}`);
-      
-      // Re-add valid users back to queue
-      if (user1Socket && user1Socket.connected) addToQueue(user1Id);
-      if (user2Socket && user2Socket.connected) addToQueue(user2Id);
-      
-      // Try matching again if there are still users in queue
-      if (waitingQueue.length >= 2) {
-        attemptMatching();
+function attemptInterestMatching(requestingSocketId) {
+  const userData = userPreferences.get(requestingSocketId);
+  if (!userData) {
+    logEvent('MATCH_ERROR', `No user data found for ${requestingSocketId}`);
+    return;
+  }
+
+  const userInterest = userData.interest || "Any Interest";
+  
+  // Phase 1: Try matching in user's selected interest queue
+  if (tryMatchInQueue(userInterest, requestingSocketId)) {
+    return; // Match found!
+  }
+  
+  // Phase 2: If not "Any Interest" already, try "Any Interest" queue
+  if (userInterest !== "Any Interest" && tryMatchInQueue("Any Interest", requestingSocketId)) {
+    return; // Match found in fallback!
+  }
+  
+  // Phase 3: Try matching across all other queues (last resort)
+  for (const [interest, queue] of Object.entries(interestQueues)) {
+    if (interest !== userInterest && interest !== "Any Interest") {
+      if (tryMatchInQueue(interest, requestingSocketId)) {
+        return; // Cross-interest match found!
       }
-      return;
-    }
-    
-    // Create match with Perfect Negotiation roles
-    // user1 is impolite (initiator), user2 is polite (receiver)
-    activeMatches.set(user1Id, { partnerId: user2Id, role: 'impolite' });
-    activeMatches.set(user2Id, { partnerId: user1Id, role: 'polite' });
-    
-    // Notify both users of the match
-    user1Socket.emit('matched', { 
-      partnerId: user2Id, 
-      role: 'impolite',
-      isInitiator: true 
-    });
-    
-    user2Socket.emit('matched', { 
-      partnerId: user1Id, 
-      role: 'polite',
-      isInitiator: false 
-    });
-    
-    logEvent('MATCH_SUCCESS', `Users ${user1Id} and ${user2Id} matched. Queue size: ${waitingQueue.length}`);
-    
-    // Continue matching if more users are waiting
-    if (waitingQueue.length >= 2) {
-      attemptMatching();
     }
   }
+  
+  logEvent('NO_MATCH', `No match found for ${requestingSocketId} with interest ${userInterest}`);
 }
+
+// Helper function to try matching in a specific queue
+function tryMatchInQueue(interest, requestingSocketId) {
+  const queue = interestQueues[interest];
+  if (!queue || queue.length < 2) {
+    return false; // Not enough users in this queue
+  }
+  
+  // Find the requesting user in this queue
+  const userIndex = queue.findIndex(user => user.socketId === requestingSocketId);
+  if (userIndex === -1) {
+    return false; // User not in this queue
+  }
+  
+  // Find another user to match with
+  let partnerIndex = -1;
+  for (let i = 0; i < queue.length; i++) {
+    if (i !== userIndex) {
+      partnerIndex = i;
+      break;
+    }
+  }
+  
+  if (partnerIndex === -1) {
+    return false; // No partner found
+  }
+  
+  // Create the match
+  const user = queue[userIndex];
+  const partner = queue[partnerIndex];
+  
+  createMatch(user.socketId, partner.socketId, interest);
+  return true; // Match created successfully
+}
+
+function createMatch(socketId1, socketId2, matchType) {
+  const socket1 = connections.get(socketId1);
+  const socket2 = connections.get(socketId2);
+  
+  if (!socket1 || !socket2 || !socket1.connected || !socket2.connected) {
+    logEvent('MATCH_FAILED', `Invalid sockets for users ${socketId1} and ${socketId2}`);
+    return;
+  }
+  
+  // Remove both users from all queues
+  removeFromAllQueues(socketId1);
+  removeFromAllQueues(socketId2);
+  
+  // Create match with Perfect Negotiation roles
+  activeMatches.set(socketId1, { partnerId: socketId2, role: 'impolite' });
+  activeMatches.set(socketId2, { partnerId: socketId1, role: 'polite' });
+  
+  // Notify both users of the match
+  socket1.emit('matched', { 
+    partnerId: socketId2, 
+    role: 'impolite',
+    matchType: matchType 
+  });
+  
+  socket2.emit('matched', { 
+    partnerId: socketId1, 
+    role: 'polite',
+    matchType: matchType 
+  });
+  
+  logEvent('MATCH_SUCCESS', `Users ${socketId1} and ${socketId2} matched via ${matchType}`);
+}
+  
 
 /**
  * Disconnects a user from their current match
@@ -157,8 +237,13 @@ function disconnectFromMatch(socketId) {
     // Notify partner of disconnection
     if (partnerSocket && partnerSocket.connected) {
       partnerSocket.emit('partner_disconnected');
-
-      addToQueue(match.partnerId);
+      
+      // Re-add partner to queue with their stored preferences
+      const partnerData = userPreferences.get(match.partnerId);
+      if (partnerData) {
+        addToQueue(match.partnerId, partnerData);
+        attemptInterestMatching(match.partnerId);
+      }
       logEvent('PARTNER_DISCONNECT', `User ${match.partnerId} notified of partner ${socketId} disconnect`);
     }
     
@@ -167,6 +252,8 @@ function disconnectFromMatch(socketId) {
   }
   return null;
 }
+
+
 
 /**
  * Handles user going to next match
@@ -184,19 +271,26 @@ function handleNext(socketId) {
     // Notify partner about next action
     if (partnerSocket && partnerSocket.connected) {
       partnerSocket.emit('partner_next');
-      // Add partner back to queue
-      addToQueue(partnerId);
+      
+      // Re-add partner to queues with their stored preferences
+      const partnerData = userPreferences.get(partnerId);
+      if (partnerData) {
+        addToQueue(partnerId, partnerData);
+        attemptInterestMatching(partnerId);
+      }
     }
     
-    // Add current user back to queue
-    addToQueue(socketId);
+    // Re-add current user to queues with their stored preferences
+    const userData = userPreferences.get(socketId);
+    if (userData) {
+      addToQueue(socketId, userData);
+      attemptInterestMatching(socketId);
+    }
     
     logEvent('NEXT_ACTION', `User ${socketId} and ${partnerId} returned to queue`);
-    
-    // Attempt new matching
-    attemptMatching();
   }
 }
+
 
 /**
  * Enhanced function to relay WebRTC signaling messages between matched users
@@ -229,18 +323,14 @@ io.on('connection', (socket) => {
   // Store socket connection
   connections.set(socket.id, socket);
   
-  // Add user to waiting queue
-  addToQueue(socket.id);
-  
-  // Attempt matching immediately
-  attemptMatching();
+
   
   // Enhanced debugging listeners
   socket.on('disconnect', (reason) => {
     logEvent('USER_DISCONNECT', `User ${socket.id} disconnected. Reason: ${reason}`);
     
     // Remove from queue
-    removeFromQueue(socket.id);
+  removeFromAllQueues(socket.id);
     
     // Disconnect from match if active
     disconnectFromMatch(socket.id);
@@ -248,10 +338,7 @@ io.on('connection', (socket) => {
     // Remove socket connection
     connections.delete(socket.id);
     
-    // Try to match remaining users
-    if (waitingQueue.length >= 2) {
-      attemptMatching();
-    }
+   
   });
   
   socket.on('connect_error', (error) => {
@@ -308,11 +395,16 @@ io.on('connection', (socket) => {
   
   // Handle manual disconnect from match (but staying connected to server)
   socket.on('disconnect_match', () => {
-    logEvent('MANUAL_DISCONNECT', `User ${socket.id} manually disconnected from match`);
-    disconnectFromMatch(socket.id);
-    addToQueue(socket.id);
-    attemptMatching();
-  });
+  logEvent('MANUAL_DISCONNECT', `User ${socket.id} manually disconnected from match`);
+  disconnectFromMatch(socket.id);
+  
+  // Re-add user to queue with their stored preferences
+  const userData = userPreferences.get(socket.id);
+  if (userData) {
+    addToQueue(socket.id, userData);
+    attemptInterestMatching(socket.id);
+  }
+});
   
   // Handle connection errors
   socket.on('error', (error) => {
@@ -324,6 +416,21 @@ io.on('connection', (socket) => {
     logEvent('HEARTBEAT', `Heartbeat from ${socket.id}`);
     socket.emit('heartbeat_ack');
   });
+
+  // Handle user joining queue with preferences
+socket.on('join_queue', (userData) => {
+  logEvent('JOIN_QUEUE', `User ${socket.id} joining with preferences: ${JSON.stringify(userData)}`);
+  
+  // Remove from any existing queues first
+  removeFromAllQueues(socket.id);
+  
+  // Add to appropriate queue (single queue now)
+  addToQueue(socket.id, userData);
+  
+  // Attempt matching immediately
+  attemptInterestMatching(socket.id);
+});
+
 });
 
 // =============================================================================
@@ -385,12 +492,17 @@ app.get('/api/turn-credentials', async (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+  const totalQueueSize = Object.values(interestQueues).reduce((sum, queue) => sum + queue.length, 0);
+  
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     activeConnections: connections.size,
-    queueSize: waitingQueue.length,
-    activeMatches: activeMatches.size / 2, // Divide by 2 since each match has 2 entries
+    totalQueueSize: totalQueueSize,
+    interestQueues: Object.fromEntries(
+      Object.entries(interestQueues).map(([interest, queue]) => [interest, queue.length])
+    ),
+    activeMatches: activeMatches.size / 2,
     uptime: process.uptime(),
     memoryUsage: process.memoryUsage()
   });
@@ -412,7 +524,9 @@ app.get('/', (req, res) => {
 app.get('/debug', (req, res) => {
   res.json({
     timestamp: new Date().toISOString(),
-    waitingQueue: waitingQueue,
+interestQueues: Object.fromEntries(
+  Object.entries(interestQueues).map(([interest, queue]) => [interest, queue.length])
+),
     activeMatches: Object.fromEntries(activeMatches),
     connections: Array.from(connections.keys()),
     memoryUsage: process.memoryUsage(),
@@ -426,14 +540,14 @@ app.get('/debug', (req, res) => {
 
 // Keep Render instance alive and log periodic status
 setInterval(() => {
-  logEvent('KEEPALIVE', `Active connections: ${connections.size}, Queue: ${waitingQueue.length}, Matches: ${activeMatches.size / 2}`);
-  
+const totalQueueSize = Object.values(interestQueues).reduce((sum, queue) => sum + queue.length, 0);
+logEvent('KEEPALIVE', `Active connections: ${connections.size}, Total Queue: ${totalQueueSize}, Matches: ${activeMatches.size / 2}`);  
   // Clean up any stale connections
   for (const [socketId, socket] of connections) {
     if (!socket.connected) {
       logEvent('CLEANUP_STALE', `Cleaning up stale connection ${socketId}`);
       connections.delete(socketId);
-      removeFromQueue(socketId);
+      removeFromAllQueues(socketId); 
       disconnectFromMatch(socketId);
     }
   }
