@@ -160,31 +160,6 @@ function tryMatchInQueue(interest, requestingSocketId) {
     return false; // Not enough users in this queue
   }
   
-
-
-// Try matching across different interests
-function tryMatchAcrossAllQueues(requestingSocketId) {
-  // Get all users from all queues
-  const allUsers = [];
-  
-  for (const [interest, queue] of Object.entries(interestQueues)) {
-    queue.forEach(user => {
-      if (user.socketId !== requestingSocketId) {
-        allUsers.push({...user, queueInterest: interest});
-      }
-    });
-  }
-  
-  // If we have at least one other user, match with them
-  if (allUsers.length > 0) {
-    const partner = allUsers[0]; // Take the first available user
-    createMatch(requestingSocketId, partner.socketId, "Cross-Interest");
-    return true;
-  }
-  
-  return false;
-}
-  
   // Find the requesting user in this queue
   const userIndex = queue.findIndex(user => user.socketId === requestingSocketId);
   if (userIndex === -1) {
@@ -223,6 +198,30 @@ function tryMatchAcrossAllQueues(requestingSocketId) {
   createMatch(user.socketId, partner.socketId, interest);
   return true; // Match created successfully
 }
+
+// Try matching across different interests
+function tryMatchAcrossAllQueues(requestingSocketId) {
+  // Get all users from all queues
+  const allUsers = [];
+  
+  for (const [interest, queue] of Object.entries(interestQueues)) {
+    queue.forEach(user => {
+      if (user.socketId !== requestingSocketId) {
+        allUsers.push({...user, queueInterest: interest});
+      }
+    });
+  }
+  
+  // If we have at least one other user, match with them
+  if (allUsers.length > 0) {
+    const partner = allUsers[0]; // Take the first available user
+    createMatch(requestingSocketId, partner.socketId, "Cross-Interest");
+    return true;
+  }
+  
+  return false;
+}
+
 function createMatch(socketId1, socketId2, matchType) {
   const socket1 = connections.get(socketId1);
   const socket2 = connections.get(socketId2);
@@ -255,7 +254,6 @@ function createMatch(socketId1, socketId2, matchType) {
   
   logEvent('MATCH_SUCCESS', `Users ${socketId1} and ${socketId2} matched via ${matchType}`);
 }
-  
 
 /**
  * Disconnects a user from their current match
