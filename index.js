@@ -131,28 +131,27 @@ function attemptInterestMatching(requestingSocketId) {
   }
 
   const userInterest = userData.interest || "Any Interest";
+  logEvent('MATCHING_ATTEMPT', `User ${requestingSocketId} looking for match with interest: ${userInterest}`);
   
   // Phase 1: Try matching in user's selected interest queue
   if (tryMatchInQueue(userInterest, requestingSocketId)) {
     return; // Match found!
   }
   
-  // Phase 2: If not "Any Interest" already, try "Any Interest" queue
+  // Phase 2: If not "Any Interest" already, try "Any Interest" queue  
   if (userInterest !== "Any Interest" && tryMatchInQueue("Any Interest", requestingSocketId)) {
     return; // Match found in fallback!
   }
   
-  // Phase 3: Try matching across all other queues (last resort)
-  for (const [interest, queue] of Object.entries(interestQueues)) {
-    if (interest !== userInterest && interest !== "Any Interest") {
-      if (tryMatchInQueue(interest, requestingSocketId)) {
-        return; // Cross-interest match found!
-      }
-    }
+  // Phase 3: Try matching across all other queues (FIXED)
+  if (tryMatchAcrossAllQueues(requestingSocketId)) {
+    return; // Cross-interest match found!
   }
   
   logEvent('NO_MATCH', `No match found for ${requestingSocketId} with interest ${userInterest}`);
 }
+
+
 
 // Helper function to try matching in a specific queue
 function tryMatchInQueue(interest, requestingSocketId) {
@@ -161,16 +160,53 @@ function tryMatchInQueue(interest, requestingSocketId) {
     return false; // Not enough users in this queue
   }
   
+
+
+// Try matching across different interests
+function tryMatchAcrossAllQueues(requestingSocketId) {
+  // Get all users from all queues
+  const allUsers = [];
+  
+  for (const [interest, queue] of Object.entries(interestQueues)) {
+    queue.forEach(user => {
+      if (user.socketId !== requestingSocketId) {
+        allUsers.push({...user, queueInterest: interest});
+      }
+    });
+  }
+  
+  // If we have at least one other user, match with them
+  if (allUsers.length > 0) {
+    const partner = allUsers[0]; // Take the first available user
+    createMatch(requestingSocketId, partner.socketId, "Cross-Interest");
+    return true;
+  }
+  
+  return false;
+}
+  
   // Find the requesting user in this queue
   const userIndex = queue.findIndex(user => user.socketId === requestingSocketId);
   if (userIndex === -1) {
-    return false; // User not in this queue
+    // User not in this specific queue, but that's OK for cross-interest matching
+    // Just find any two different users
+    if (queue.length >= 2) {
+      const user1 = queue[0];
+      const user2 = queue[1];
+      
+      // Make sure we're not trying to match the requesting user with themselves
+      if (user1.socketId !== requestingSocketId && user2.socketId !== requestingSocketId) {
+        createMatch(user1.socketId, user2.socketId, interest);
+        return true;
+      }
+    }
+    return false; // User not in this queue and no other matches available
   }
   
   // Find another user to match with
   let partnerIndex = -1;
   for (let i = 0; i < queue.length; i++) {
-    if (i !== userIndex) {
+    if (i !== userIndex && queue[i].socketId !== requestingSocketId) {
       partnerIndex = i;
       break;
     }
@@ -187,7 +223,6 @@ function tryMatchInQueue(interest, requestingSocketId) {
   createMatch(user.socketId, partner.socketId, interest);
   return true; // Match created successfully
 }
-
 function createMatch(socketId1, socketId2, matchType) {
   const socket1 = connections.get(socketId1);
   const socket2 = connections.get(socketId2);
