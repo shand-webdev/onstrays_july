@@ -84,7 +84,7 @@ function validateConnection(socketId) {
 /**
  * Removes a user from the waiting queue
  */
-function removeFromAllQueues(socketId) {
+function removeFromAllQueues(socketId, preservePreferences = false) {
   let removed = false;
   for (const [interest, queue] of Object.entries(interestQueues)) {
     const index = queue.findIndex(user => user.socketId === socketId);
@@ -94,7 +94,12 @@ function removeFromAllQueues(socketId) {
       removed = true;
     }
   }
-  userPreferences.delete(socketId);
+  
+  // Only delete preferences if not preserving (like on disconnect)
+  if (!preservePreferences) {
+    userPreferences.delete(socketId);
+  }
+  
   return removed;
 }
 
@@ -133,24 +138,38 @@ function attemptInterestMatching(requestingSocketId) {
   const userInterest = userData.interest || "Any Interest";
   logEvent('MATCHING_ATTEMPT', `User ${requestingSocketId} looking for match with interest: ${userInterest}`);
   
-  // Phase 1: Try matching in user's selected interest queue
+  // Phase 1: Try user's specific interest
   if (tryMatchInQueue(userInterest, requestingSocketId)) {
     return; // Match found!
   }
   
-  // Phase 2: If not "Any Interest" already, try "Any Interest" queue  
-  if (userInterest !== "Any Interest" && tryMatchInQueue("Any Interest", requestingSocketId)) {
-    return; // Match found in fallback!
+  // Phase 2: Move to "Any Interest" queue if not already there
+  if (userInterest !== "Any Interest") {
+    logEvent('MOVING_TO_ANY', `Moving user ${requestingSocketId} from ${userInterest} to Any Interest`);
+    
+    // Remove from current queue
+    removeFromQueue(requestingSocketId, userInterest);
+    
+    // Add to "Any Interest" queue with updated preference
+    const updatedUserData = {...userData, interest: "Any Interest"};
+    userPreferences.set(requestingSocketId, updatedUserData);
+    
+    interestQueues["Any Interest"].push({
+      socketId: requestingSocketId,
+      ...updatedUserData
+    });
+    
+    logEvent('QUEUE_ADD', `User ${requestingSocketId} added to Any Interest queue. Queue size: ${interestQueues["Any Interest"].length}`);
+    
+    // Try matching in "Any Interest" queue
+    if (tryMatchInQueue("Any Interest", requestingSocketId)) {
+      return; // Match found!
+    }
   }
   
-  // Phase 3: Try matching across all other queues (FIXED)
-  if (tryMatchAcrossAllQueues(requestingSocketId)) {
-    return; // Cross-interest match found!
-  }
-  
-  logEvent('NO_MATCH', `No match found for ${requestingSocketId} with interest ${userInterest}`);
+  // No match found - user waits in queue
+  logEvent('NO_MATCH', `User ${requestingSocketId} waiting in queue`);
 }
-
 
 
 // Helper function to try matching in a specific queue
@@ -199,28 +218,6 @@ function tryMatchInQueue(interest, requestingSocketId) {
   return true; // Match created successfully
 }
 
-// Try matching across different interests
-function tryMatchAcrossAllQueues(requestingSocketId) {
-  // Get all users from all queues
-  const allUsers = [];
-  
-  for (const [interest, queue] of Object.entries(interestQueues)) {
-    queue.forEach(user => {
-      if (user.socketId !== requestingSocketId) {
-        allUsers.push({...user, queueInterest: interest});
-      }
-    });
-  }
-  
-  // If we have at least one other user, match with them
-  if (allUsers.length > 0) {
-    const partner = allUsers[0]; // Take the first available user
-    createMatch(requestingSocketId, partner.socketId, "Cross-Interest");
-    return true;
-  }
-  
-  return false;
-}
 
 function createMatch(socketId1, socketId2, matchType) {
   const socket1 = connections.get(socketId1);
@@ -231,9 +228,10 @@ function createMatch(socketId1, socketId2, matchType) {
     return;
   }
   
-  // Remove both users from all queues
-  removeFromAllQueues(socketId1);
-  removeFromAllQueues(socketId2);
+
+// Remove both users from all queues BUT preserve their preferences
+removeFromAllQueues(socketId1, true); // true = preserve preferences
+removeFromAllQueues(socketId2, true);
   
   // Create match with Perfect Negotiation roles
   activeMatches.set(socketId1, { partnerId: socketId2, role: 'impolite' });
@@ -337,6 +335,22 @@ function relaySignalingMessage(socketId, messageType, data) {
   } else {
     logEvent('SIGNALING_FAILED', `Failed to relay ${messageType} from ${socketId} - Invalid connections`);
   }
+}
+
+/**
+ * Remove user from a specific queue only (not userPreferences)
+ */
+function removeFromQueue(socketId, interest) {
+  const queue = interestQueues[interest];
+  if (queue) {
+    const index = queue.findIndex(user => user.socketId === socketId);
+    if (index !== -1) {
+      queue.splice(index, 1);
+      logEvent('QUEUE_REMOVE', `User ${socketId} removed from ${interest} queue. Queue size: ${queue.length}`);
+      return true;
+    }
+  }
+  return false;
 }
 
 
