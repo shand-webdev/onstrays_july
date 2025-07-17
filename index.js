@@ -356,13 +356,19 @@ function findInQueue(queueName, requestingUserId) {
   const queue = interestQueues[queueName];
   if (!queue || queue.length < 2) return null;
   
+  logEvent('FIND_DEBUG', `Searching ${queueName} queue for ${requestingUserId}. Queue size: ${queue.length}`);
+  
   // Find someone who can match (not in cooldown)
   for (const user of queue) {
+    logEvent('FIND_CHECK', `Checking user ${user.userId} vs ${requestingUserId}`);
+    
     if (user.userId !== requestingUserId && canMatch(requestingUserId, user.userId)) {
+      logEvent('FIND_SUCCESS', `Found match: ${user.userId} for ${requestingUserId}`);
       return user.socketId; // Return socketId for matching
     }
   }
   
+  logEvent('FIND_FAILED', `No valid match found in ${queueName} for ${requestingUserId}`);
   return null;
 }
 
