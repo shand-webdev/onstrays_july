@@ -136,42 +136,6 @@ let selectedInterest = userData.interest || "Any Interest";
   logEvent('QUEUE_ADD', `User ${socketId} added to Any Interest queue. Size: ${interestQueues["Any Interest"].length}`);
 }
 
-/**
- * Attempts to match two users from the queue
- */
-function attemptMatching(socketId) {
-  const userData = userPreferences.get(socketId);
-  if (!userData) {
-    logEvent('MATCH_ERROR', `No user data found for ${socketId}`);
-    return;
-  }
-
-  const userId = userData.userId;
-  const userInterest = userData.interest || "Any Interest";
-  
-  logEvent('MATCHING_ATTEMPT', `User ${userId} (${userInterest}) looking for match`);
-  
-  // Level 1: Try specific interest first (if not "Any Interest")
-  if (userInterest !== "Any Interest") {
-    let matchSocketId = findInQueue(userInterest, userId);
-    if (matchSocketId) {
-      logEvent('MATCH_LEVEL1', `Same interest match found for ${userId}`);
-      return createMatch(socketId, matchSocketId, `${userInterest}-Match`);
-    }
-    logEvent('MATCH_LEVEL1_FAILED', `No match in ${userInterest} queue for ${userId}`);
-  }
-  
-  // Level 2: Try "Any Interest" queue (safety net)
-  let matchSocketId = findInQueue("Any Interest", userId);
-  if (matchSocketId) {
-    logEvent('MATCH_LEVEL2', `Any Interest match found for ${userId}`);
-    return createMatch(socketId, matchSocketId, "Any-Interest-Match");
-  }
-  
-  
-  // No match found (should never happen)
-  logEvent('NO_MATCH', `User ${userId} waiting - no users available`);
-}
 
 
 function createMatch(socketId1, socketId2, matchType) {
@@ -394,7 +358,7 @@ function findInAllOtherQueues(requestingUserId, excludeInterest) {
 /**
  * Main 3-level matching function
  */
-function attemptMatching(socketId) {
+function attemptInterestMatching(socketId) {
   const userData = userPreferences.get(socketId);
   if (!userData) {
     logEvent('MATCH_ERROR', `No user data found for ${socketId}`);
