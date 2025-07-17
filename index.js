@@ -318,7 +318,7 @@ function cleanExpiredCooldowns() {
  */
 function findInQueue(queueName, requestingUserId) {
   const queue = interestQueues[queueName];
-  if (!queue || queue.length < 2) return null;
+  if (!queue || queue.length === 0) return null;
   
   logEvent('FIND_DEBUG', `Searching ${queueName} queue for ${requestingUserId}. Queue size: ${queue.length}`);
   
