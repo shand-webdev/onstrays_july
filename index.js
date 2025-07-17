@@ -57,6 +57,9 @@ const activeMatches = new Map();
 // Socket connections: Map of socketId -> socket instance
 const connections = new Map();
 
+const recentMatches = new Map(); // "userId1-userId2" → timestamp
+const COOLDOWN_TIME = 5000; // 5 seconds for testing
+
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
@@ -129,94 +132,9 @@ let selectedInterest = userData.interest || "Any Interest";
  * Attempts to match two users from the queue
  */
 function attemptInterestMatching(requestingSocketId) {
-  const userData = userPreferences.get(requestingSocketId);
-  if (!userData) {
-    logEvent('MATCH_ERROR', `No user data found for ${requestingSocketId}`);
-    return;
-  }
-
-  const userInterest = userData.interest || "Any Interest";
-  logEvent('MATCHING_ATTEMPT', `User ${requestingSocketId} looking for match with interest: ${userInterest}`);
-  
-  // Phase 1: Try user's specific interest
-  if (tryMatchInQueue(userInterest, requestingSocketId)) {
-    return; // Match found!
-  }
-  
-  // Phase 2: Move to "Any Interest" queue if not already there
-  if (userInterest !== "Any Interest") {
-    logEvent('MOVING_TO_ANY', `Moving user ${requestingSocketId} from ${userInterest} to Any Interest`);
-    
-    // Remove from current queue
-    removeFromQueue(requestingSocketId, userInterest);
-    
-    // Add to "Any Interest" queue with updated preference
-    const updatedUserData = {...userData, interest: "Any Interest"};
-    userPreferences.set(requestingSocketId, updatedUserData);
-    
-    interestQueues["Any Interest"].push({
-      socketId: requestingSocketId,
-      ...updatedUserData
-    });
-    
-    logEvent('QUEUE_ADD', `User ${requestingSocketId} added to Any Interest queue. Queue size: ${interestQueues["Any Interest"].length}`);
-    
-    // Try matching in "Any Interest" queue
-    if (tryMatchInQueue("Any Interest", requestingSocketId)) {
-      return; // Match found!
-    }
-  }
-  
-  // No match found - user waits in queue
-  logEvent('NO_MATCH', `User ${requestingSocketId} waiting in queue`);
+  attemptMatching(requestingSocketId); // Use new 3-level logic
 }
 
-
-// Helper function to try matching in a specific queue
-function tryMatchInQueue(interest, requestingSocketId) {
-  const queue = interestQueues[interest];
-  if (!queue || queue.length < 2) {
-    return false; // Not enough users in this queue
-  }
-  
-  // Find the requesting user in this queue
-  const userIndex = queue.findIndex(user => user.socketId === requestingSocketId);
-  if (userIndex === -1) {
-    // User not in this specific queue, but that's OK for cross-interest matching
-    // Just find any two different users
-    if (queue.length >= 2) {
-      const user1 = queue[0];
-      const user2 = queue[1];
-      
-      // Make sure we're not trying to match the requesting user with themselves
-      if (user1.socketId !== requestingSocketId && user2.socketId !== requestingSocketId) {
-        createMatch(user1.socketId, user2.socketId, interest);
-        return true;
-      }
-    }
-    return false; // User not in this queue and no other matches available
-  }
-  
-  // Find another user to match with
-  let partnerIndex = -1;
-  for (let i = 0; i < queue.length; i++) {
-    if (i !== userIndex && queue[i].socketId !== requestingSocketId) {
-      partnerIndex = i;
-      break;
-    }
-  }
-  
-  if (partnerIndex === -1) {
-    return false; // No partner found
-  }
-  
-  // Create the match
-  const user = queue[userIndex];
-  const partner = queue[partnerIndex];
-  
-  createMatch(user.socketId, partner.socketId, interest);
-  return true; // Match created successfully
-}
 
 
 function createMatch(socketId1, socketId2, matchType) {
@@ -227,6 +145,13 @@ function createMatch(socketId1, socketId2, matchType) {
     logEvent('MATCH_FAILED', `Invalid sockets for users ${socketId1} and ${socketId2}`);
     return;
   }
+
+  // Add cooldown between matched users
+const userData1 = userPreferences.get(socketId1);
+const userData2 = userPreferences.get(socketId2);
+if (userData1 && userData2) {
+  addRecentMatch(userData1.userId, userData2.userId);
+}
   
 
 // Remove both users from all queues BUT preserve their preferences
@@ -300,28 +225,31 @@ function handleNext(socketId) {
     activeMatches.delete(partnerId);
     
     // Notify partner about next action
-    if (partnerSocket && partnerSocket.connected) {
-      partnerSocket.emit('partner_next');
-      
-      // Re-add partner to queues with their stored preferences
-      const partnerData = userPreferences.get(partnerId);
-      if (partnerData) {
-        addToQueue(partnerId, partnerData);
-        attemptInterestMatching(partnerId);
-      }
-    }
-    
-    // Re-add current user to queues with their stored preferences
-    const userData = userPreferences.get(socketId);
-    if (userData) {
-      addToQueue(socketId, userData);
-      attemptInterestMatching(socketId);
-    }
-    
-    logEvent('NEXT_ACTION', `User ${socketId} and ${partnerId} returned to queue`);
+if (partnerSocket && partnerSocket.connected) {
+  partnerSocket.emit('partner_next');
+  
+  // Re-add partner to queues with their stored preferences
+  const partnerData = userPreferences.get(partnerId);
+  if (!partnerData) {
+    logEvent('NEXT_ERROR', `Partner ${partnerId} has no preferences stored`);
+  } else {
+    addToQueue(partnerId, partnerData);
+    attemptInterestMatching(partnerId);
   }
 }
 
+// Re-add current user to queues with their stored preferences (OUTSIDE if block)
+const userData = userPreferences.get(socketId);
+if (!userData) {
+  logEvent('NEXT_ERROR', `User ${socketId} has no preferences stored`);
+  return;
+}
+addToQueue(socketId, userData);
+attemptInterestMatching(socketId);
+
+logEvent('NEXT_ACTION', `User ${socketId} and ${partnerId} returned to queue`);
+}
+}
 
 /**
  * Enhanced function to relay WebRTC signaling messages between matched users
@@ -336,6 +264,132 @@ function relaySignalingMessage(socketId, messageType, data) {
     logEvent('SIGNALING_FAILED', `Failed to relay ${messageType} from ${socketId} - Invalid connections`);
   }
 }
+
+/**
+ * Add recent match between two users
+ */
+function addRecentMatch(userId1, userId2) {
+  const key1 = `${userId1}-${userId2}`;
+  const key2 = `${userId2}-${userId1}`;
+  const timestamp = Date.now();
+  
+  recentMatches.set(key1, timestamp);
+  recentMatches.set(key2, timestamp);
+  
+  logEvent('COOLDOWN_ADD', `Added cooldown between ${userId1} and ${userId2}`);
+}
+
+/**
+ * Check if two users can match (not in cooldown)
+ */
+function canMatch(userId1, userId2) {
+  return true;
+  //const key = `${userId1}-${userId2}`;
+  //const lastMatch = recentMatches.get(key);
+  
+  //if (!lastMatch) return true; // Never matched before
+  
+  //const timePassed = Date.now() - lastMatch;
+  //return timePassed > COOLDOWN_TIME;
+}
+
+/**
+ * Clean expired cooldowns
+ */
+function cleanExpiredCooldowns() {
+  const now = Date.now();
+  let cleaned = 0;
+  
+  for (const [key, timestamp] of recentMatches) {
+    if (now - timestamp > COOLDOWN_TIME) {
+      recentMatches.delete(key);
+      cleaned++;
+    }
+  }
+  
+  if (cleaned > 0) {
+    logEvent('COOLDOWN_CLEANUP', `Cleaned ${cleaned} expired cooldowns`);
+  }
+}
+
+/**
+ * Search for match in specific queue
+ */
+function findInQueue(queueName, requestingUserId) {
+  const queue = interestQueues[queueName];
+  if (!queue || queue.length < 2) return null;
+  
+  // Find someone who can match (not in cooldown)
+  for (const user of queue) {
+    if (user.userId !== requestingUserId && canMatch(requestingUserId, user.userId)) {
+      return user.socketId; // Return socketId for matching
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Search all other interest queues (Level 3)
+ */
+function findInAllOtherQueues(requestingUserId, excludeInterest) {
+  const queueNames = Object.keys(interestQueues);
+  
+  for (const queueName of queueNames) {
+    // Skip user's own interest and "Any Interest" (already checked)
+    if (queueName === excludeInterest || queueName === "Any Interest") {
+      continue;
+    }
+    
+    const match = findInQueue(queueName, requestingUserId);
+    if (match) return match;
+  }
+  
+  return null;
+}
+
+/**
+ * Main 3-level matching function
+ */
+function attemptMatching(socketId) {
+  const userData = userPreferences.get(socketId);
+  if (!userData) {
+    logEvent('MATCH_ERROR', `No user data found for ${socketId}`);
+    return;
+  }
+
+  const userId = userData.userId;
+  const userInterest = userData.interest || "Any Interest";
+  
+  logEvent('MATCHING_ATTEMPT', `User ${userId} (${userInterest}) looking for match`);
+  
+  // Level 1: Same interest
+  let matchSocketId = findInQueue(userInterest, userId);
+  if (matchSocketId) {
+    logEvent('MATCH_LEVEL1', `Same interest match found for ${userId}`);
+    return createMatch(socketId, matchSocketId, `${userInterest}-Match`);
+  }
+  
+  // Level 2: Any Interest
+  if (userInterest !== "Any Interest") {
+    matchSocketId = findInQueue("Any Interest", userId);
+    if (matchSocketId) {
+      logEvent('MATCH_LEVEL2', `Any Interest match found for ${userId}`);
+      return createMatch(socketId, matchSocketId, "Any-Interest-Match");
+    }
+  }
+  
+  // Level 3: All other queues
+  matchSocketId = findInAllOtherQueues(userId, userInterest);
+  if (matchSocketId) {
+    logEvent('MATCH_LEVEL3', `Cross-interest match found for ${userId}`);
+    return createMatch(socketId, matchSocketId, "Cross-Interest-Match");
+  }
+  
+  // No match found
+  logEvent('NO_MATCH', `User ${userId} waiting in ${userInterest} queue`);
+}
+
 
 /**
  * Remove user from a specific queue only (not userPreferences)
@@ -600,11 +654,16 @@ logEvent('KEEPALIVE', `Active connections: ${connections.size}, Total Queue: ${t
   }
 }, 30000); // Every 30 seconds
 
+// Clean expired cooldowns every minute
+setInterval(() => {
+  cleanExpiredCooldowns();
+}, 60000);
+
 // =============================================================================
 // SERVER STARTUP
 // =============================================================================
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 
 server.listen(PORT, () => {
   
