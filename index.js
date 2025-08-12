@@ -48,6 +48,9 @@ const interestQueues = {
   "Gaming": []
 };
 
+// Tips data storage: Map of userId -> tip count
+const userTips = new Map(); // userId -> { tipsReceived: number }
+
 // Store user preferences: Map of socketId -> user data
 const userPreferences = new Map();
 
@@ -63,7 +66,23 @@ const COOLDOWN_TIME = 5000; // 5 seconds for testing
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
+/**
+ * Get user's tip count
+ */
+function getUserTips(userId) {
+  return userTips.get(userId) || { tipsReceived: 0 };
+}
 
+/**
+ * Update user's tip count
+ */
+function updateUserTips(userId, increment = 1) {
+  const current = getUserTips(userId);
+  const updated = { tipsReceived: current.tipsReceived + increment };
+  userTips.set(userId, updated);
+  logEvent('TIPS_UPDATE', `User ${userId} tips: ${updated.tipsReceived}`);
+  return updated;
+}
 /**
  * Logs events with timestamp for debugging
  */
@@ -141,6 +160,8 @@ let selectedInterest = userData.interest || "Any Interest";
 function createMatch(socketId1, socketId2, matchType) {
   const socket1 = connections.get(socketId1);
   const socket2 = connections.get(socketId2);
+
+  
   
   if (!socket1 || !socket2 || !socket1.connected || !socket2.connected) {
     logEvent('MATCH_FAILED', `Invalid sockets for users ${socketId1} and ${socketId2}`);
@@ -165,13 +186,16 @@ removeFromAllQueues(socketId2, true);
   
   // Notify both users of the match
   socket1.emit('matched', { 
-    partnerId: socketId2, 
+    partnerId: socketId2,  // socketId for WebRTC
+     partnerUserId: userData2.userId,  // userId for database 
     role: 'impolite',
-    matchType: matchType 
+    matchType: matchType,
+     
   });
   
   socket2.emit('matched', { 
-    partnerId: socketId1, 
+    partnerId: socketId1,  // socketId for WebRTC  
+    partnerUserId: userData1.userId,  // userId for database
     role: 'polite',
     matchType: matchType 
   });
@@ -322,15 +346,21 @@ function findInQueue(queueName, requestingUserId) {
   
   logEvent('FIND_DEBUG', `Searching ${queueName} queue for ${requestingUserId}. Queue size: ${queue.length}`);
   
-  // Find someone who can match (not in cooldown)
-  for (const user of queue) {
-    logEvent('FIND_CHECK', `Checking user ${user.userId} vs ${requestingUserId}`);
-    
-    if (user.userId !== requestingUserId && canMatch(requestingUserId, user.userId)) {
-      logEvent('FIND_SUCCESS', `Found match: ${user.userId} for ${requestingUserId}`);
-      return user.socketId; // Return socketId for matching
-    }
+  /// Find someone who can match (not in cooldown)
+for (const user of queue) {
+  logEvent('FIND_CHECK', `Checking user ${user.userId} vs ${requestingUserId}`);
+  
+  // VALIDATE SOCKET EXISTS FIRST
+  if (!connections.has(user.socketId)) {
+    logEvent('GHOST_FOUND', `Skipping ghost user ${user.userId} with dead socket ${user.socketId}`);
+    continue; // Skip this ghost entry
   }
+  
+  if (user.userId !== requestingUserId && canMatch(requestingUserId, user.userId)) {
+    logEvent('FIND_SUCCESS', `Found match: ${user.userId} for ${requestingUserId}`);
+    return user.socketId; // Return socketId for matching
+  }
+}
   
   logEvent('FIND_FAILED', `No valid match found in ${queueName} for ${requestingUserId}`);
   return null;
@@ -500,7 +530,28 @@ io.on('connection', (socket) => {
   console.log('🧪 BACKEND: Test connection received:', data);
   socket.emit('test-response', { message: 'Hello from backend' });
 });
+
+// Handle tip toggle events
+socket.on('tip_toggle', (data) => {
+  logEvent('TIP_TOGGLE', `Tip ${data.action} from ${socket.id}`);
   
+  const { targetUserId, fromUserId, action, timestamp } = data;
+  
+  // Find target socket and forward the event
+  const targetSocket = connections.get(targetUserId);
+  if (targetSocket && targetSocket.connected) {
+    targetSocket.emit('tip_toggle', {
+      fromUserId,
+      action,
+      timestamp
+    });
+    logEvent('TIP_SUCCESS', `Tip ${action} forwarded to ${targetUserId}`);
+  } else {
+    logEvent('TIP_ERROR', `Target user ${targetUserId} not connected`);
+  }
+});
+
+
   // Handle manual disconnect from match (but staying connected to server)
   socket.on('disconnect_match', () => {
   logEvent('MANUAL_DISCONNECT', `User ${socket.id} manually disconnected from match`);
@@ -540,6 +591,7 @@ socket.on('join_queue', (userData) => {
 });
 
 });
+
 
 // =============================================================================
 // EXPRESS ROUTES
@@ -612,7 +664,9 @@ app.get('/health', (req, res) => {
     ),
     activeMatches: activeMatches.size / 2,
     uptime: process.uptime(),
-    memoryUsage: process.memoryUsage()
+    memoryUsage: process.memoryUsage(),
+    totalTipsInSystem: Array.from(userTips.values()).reduce((sum, user) => sum + user.tipsReceived, 0),
+    usersWithTips: userTips.size
   });
 });
 
