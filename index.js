@@ -158,10 +158,15 @@ let selectedInterest = userData.interest || "Any Interest";
 
 
 function createMatch(socketId1, socketId2, matchType) {
+  // ADD THIS - Check if either user is already matched
+  if (activeMatches.has(socketId1) || activeMatches.has(socketId2)) {
+    logEvent('MATCH_BLOCKED', `Race condition blocked: ${socketId1} or ${socketId2} already matched`);
+    return false; // Important: return false to indicate failure
+  }
   const socket1 = connections.get(socketId1);
   const socket2 = connections.get(socketId2);
 
-  
+ 
   
   if (!socket1 || !socket2 || !socket1.connected || !socket2.connected) {
     logEvent('MATCH_FAILED', `Invalid sockets for users ${socketId1} and ${socketId2}`);
@@ -200,7 +205,8 @@ removeFromAllQueues(socketId2, true);
     matchType: matchType 
   });
   
-  logEvent('MATCH_SUCCESS', `Users ${socketId1} and ${socketId2} matched via ${matchType}`);
+logEvent('MATCH_SUCCESS', `Users ${socketId1} and ${socketId2} matched via ${matchType}`);
+  return true; // Return true to indicate successful match
 }
 
 /**
@@ -240,6 +246,12 @@ function disconnectFromMatch(socketId) {
  * Handles user going to next match
  */
 function handleNext(socketId) {
+  // PROTECTION: Check if user is already being processed
+  if (!activeMatches.has(socketId)) {
+    logEvent('NEXT_IGNORED', `User ${socketId} not in active match, ignoring next request`);
+    return;
+  }
+
   const match = activeMatches.get(socketId);
   if (match) {
     const partnerId = match.partnerId;
@@ -400,33 +412,47 @@ function attemptInterestMatching(socketId) {
   
   logEvent('MATCHING_ATTEMPT', `User ${userId} (${userInterest}) looking for match`);
   
-  // Level 1: Same interest
+  // Level 1: Same interest - KEEP TRYING UNTIL SUCCESS OR NO MORE OPTIONS
   let matchSocketId = findInQueue(userInterest, userId);
-  if (matchSocketId) {
+  while (matchSocketId) {
     logEvent('MATCH_LEVEL1', `Same interest match found for ${userId}`);
-    return createMatch(socketId, matchSocketId, `${userInterest}-Match`);
+    const matchSuccess = createMatch(socketId, matchSocketId, `${userInterest}-Match`);
+    if (matchSuccess) return; // Match successful, stop here
+    
+    // Match was blocked, try finding another user in same queue
+    logEvent('MATCH_RETRY', `Retrying same interest match for ${userId}`);
+    matchSocketId = findInQueue(userInterest, userId);
   }
   
-  // Level 2: Any Interest
+  // Level 2: Any Interest - KEEP TRYING UNTIL SUCCESS OR NO MORE OPTIONS
   if (userInterest !== "Any Interest") {
     matchSocketId = findInQueue("Any Interest", userId);
-    if (matchSocketId) {
+    while (matchSocketId) {
       logEvent('MATCH_LEVEL2', `Any Interest match found for ${userId}`);
-      return createMatch(socketId, matchSocketId, "Any-Interest-Match");
+      const matchSuccess = createMatch(socketId, matchSocketId, "Any-Interest-Match");
+      if (matchSuccess) return; // Match successful, stop here
+      
+      // Match was blocked, try finding another user in Any Interest
+      logEvent('MATCH_RETRY', `Retrying Any Interest match for ${userId}`);
+      matchSocketId = findInQueue("Any Interest", userId);
     }
   }
   
-  // Level 3: All other queues
+  // Level 3: All other queues - KEEP TRYING UNTIL SUCCESS OR NO MORE OPTIONS
   matchSocketId = findInAllOtherQueues(userId, userInterest);
-  if (matchSocketId) {
+  while (matchSocketId) {
     logEvent('MATCH_LEVEL3', `Cross-interest match found for ${userId}`);
-    return createMatch(socketId, matchSocketId, "Cross-Interest-Match");
+    const matchSuccess = createMatch(socketId, matchSocketId, "Cross-Interest-Match");
+    if (matchSuccess) return; // Match successful, stop here
+    
+    // Match was blocked, try finding another user in other queues
+    logEvent('MATCH_RETRY', `Retrying cross-interest match for ${userId}`);
+    matchSocketId = findInAllOtherQueues(userId, userInterest);
   }
   
-  // No match found
+  // No match found after trying all available options
   logEvent('NO_MATCH', `User ${userId} waiting in ${userInterest} queue`);
 }
-
 
 /**
  * Remove user from a specific queue only (not userPreferences)
